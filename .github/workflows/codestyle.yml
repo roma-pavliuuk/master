@@ -12,19 +12,19 @@ jobs:
   check-code-style:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
       - id: detect
         uses: ./.github/actions/detect-docs-only
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         if: steps.detect.outputs.docs_only != 'true'
         with:
           python-version: '3.10'
       - name: Cache Python dependencies
         if: steps.detect.outputs.docs_only != 'true'
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
