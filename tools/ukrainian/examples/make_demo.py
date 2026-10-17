@@ -28,6 +28,8 @@ plus summary.md with page CER / WER of both pipelines.
         --rec_model_dir output/uk_handwritten_rec_gpu_v6/best_accuracy/inference \\
         --det_model_dir output/uk_handwritten_det_server/best_accuracy/inference \\
         --output_dir output/demo
+    # optional: --lexicon /usr/share/dict/ukrainian --lexicon_freq train_data/lexicon/uk_50k.txt
+    # (the visualization images show the recognizer output before the correction)
 """
 
 import argparse
@@ -37,6 +39,7 @@ import sys
 
 __dir__ = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, __dir__)
+sys.path.insert(0, os.path.abspath(os.path.join(__dir__, "..")))
 sys.path.insert(0, os.path.abspath(os.path.join(__dir__, "../../..")))
 
 from uk_ocr_common import (
@@ -45,6 +48,8 @@ from uk_ocr_common import (
     lines_to_text,
     result_to_lines,
 )  # noqa: E402
+
+from lexicon_correct import add_lexicon_args, corrector_from_args  # noqa: E402
 
 from ppocr.utils.ocr_error_rate import cer, normalize_for_eval, wer  # noqa: E402
 
@@ -83,7 +88,9 @@ def main():
     parser.add_argument("--pages", nargs="*", help="explicit page file names")
     parser.add_argument("--output_dir", default="output/demo")
     parser.add_argument("--device", default="cpu")
+    add_lexicon_args(parser)
     args = parser.parse_args()
+    corrector = corrector_from_args(args)  # applied to OUR pipeline only
 
     with open(args.det_label, "r", encoding="utf-8") as f:
         pages = [line.rstrip("\n").split("\t", 1) for line in f if line.strip()]
@@ -110,7 +117,11 @@ def main():
         row = {"page": name}
         for tag, ocr in (("official", official), ("ours", ours)):
             res = ocr.predict(os.path.join(args.data_dir, img_rel))[0]
-            text = lines_to_text(result_to_lines(res))
+            lines = result_to_lines(res)
+            if corrector is not None and tag == "ours":
+                for ln in lines:
+                    ln["text"] = corrector.correct(ln["text"])
+            text = lines_to_text(lines)
             with open(os.path.join(out, tag + ".txt"), "w", encoding="utf-8") as f:
                 f.write(text + "\n")
             res.save_to_img(out)

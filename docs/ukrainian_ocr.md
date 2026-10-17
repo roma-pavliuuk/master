@@ -228,13 +228,15 @@ for res in ocr.predict("ukrainian_document.png"):   # також .pdf: кожн�
     res.save_to_img("output/")
 ```
 
-Донавчена модель друкованого тексту:
+Донавчена модель друкованого тексту: `output/uk_printed_rec_cpu/best_accuracy/inference`
+(v1, чисті сучасні документи) або `output/uk_printed_rec_gpu_v2/best_accuracy/inference`
+(v2, машинопис і архівний друк):
 
 ```python
 ocr = PaddleOCR(
     text_detection_model_name="PP-OCRv5_server_det",
     text_recognition_model_name="eslav_PP-OCRv5_mobile_rec",   # зареєстрована назва архітектури
-    text_recognition_model_dir="output/uk_printed_rec_ppocrv5/best_accuracy/inference",
+    text_recognition_model_dir="output/uk_printed_rec_gpu_v2/best_accuracy/inference",
     use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False,
 )
 ```
@@ -244,7 +246,7 @@ python tools/ukrainian/examples/make_sample_document.py --output_dir output/uk_d
 python tools/ukrainian/examples/ocr_printed.py output/uk_demo/uk_printed_document.png
 python tools/ukrainian/examples/ocr_printed.py output/uk_demo/uk_printed_document.pdf
 python tools/ukrainian/examples/ocr_printed.py output/uk_demo/uk_printed_document_photo.jpg \
-    --rec_model_dir output/uk_printed_rec_ppocrv5/best_accuracy/inference
+    --rec_model_dir output/uk_printed_rec_cpu/best_accuracy/inference
 ```
 
 Для сканів зі значним поворотом увімкніть `use_doc_orientation_classify=True`,
@@ -253,22 +255,35 @@ python tools/ukrainian/examples/ocr_printed.py output/uk_demo/uk_printed_documen
 
 ### 2. Рукописний текст
 
+Фінальні моделі: детектор `output/uk_handwritten_det_server/best_accuracy/inference`,
+розпізнавання `output/uk_handwritten_rec_gpu_v8/best_accuracy/inference`
+(результати — у розділі «Результати експериментів»).
+
 ```python
+from paddleocr import PaddleOCR
+
 ocr = PaddleOCR(
     text_detection_model_name="PP-OCRv5_server_det",
-    text_detection_model_dir=None,   # або донавчений детектор
-    text_recognition_model_name="eslav_PP-OCRv5_mobile_rec",
-    text_recognition_model_dir="output/uk_handwritten_rec_ppocrv5/best_accuracy/inference",
+    text_detection_model_dir="output/uk_handwritten_det_server/best_accuracy/inference",
+    text_recognition_model_name="eslav_PP-OCRv5_mobile_rec",   # архітектура; словник — з inference.yml
+    text_recognition_model_dir="output/uk_handwritten_rec_gpu_v8/best_accuracy/inference",
+    # сторінка зменшується до 960 px і підібрані пороги DB (HANDWRITTEN_DET_LIMIT)
+    text_det_limit_side_len=960, text_det_limit_type="max",
+    text_det_thresh=0.4, text_det_box_thresh=0.5, text_det_unclip_ratio=1.8,
     use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False,
 )
+for res in ocr.predict("сторінка.jpg"):
+    print("\n".join(res["rec_texts"]))
 ```
 
 ```bash
-python tools/ukrainian/examples/ocr_handwritten.py page.jpg \
-    --rec_model_dir output/uk_handwritten_rec_ppocrv5/best_accuracy/inference
+python tools/ukrainian/examples/ocr_handwritten.py сторінка.jpg \
+    --det_model_dir output/uk_handwritten_det_server/best_accuracy/inference \
+    --rec_model_dir output/uk_handwritten_rec_gpu_v8/best_accuracy/inference \
+    --lexicon /usr/share/dict/ukrainian --lexicon_freq train_data/lexicon/uk_50k.txt
 # лише розпізнавання вже вирізаних рядків
 python tools/ukrainian/examples/ocr_handwritten.py train_data/uk_handwritten/images \
-    --rec_model_dir output/uk_handwritten_rec_ppocrv5/best_accuracy/inference --lines
+    --rec_model_dir output/uk_handwritten_rec_gpu_v8/best_accuracy/inference --lines
 ```
 
 ### 3–5. Кілька зображень, збереження тексту, координати
@@ -873,7 +888,7 @@ RUKOPYS — це машинопис 1920-х років з тодішнім пр�
 ```bash
 python tools/ukrainian/examples/ocr_handwritten.py сторінка.jpg \
     --det_model_dir output/uk_handwritten_det_server/best_accuracy/inference \
-    --rec_model_dir output/uk_handwritten_rec_gpu_v7/best_accuracy/inference \
+    --rec_model_dir output/uk_handwritten_rec_gpu_v8/best_accuracy/inference \
     --lexicon /usr/share/dict/ukrainian --lexicon_freq train_data/lexicon/uk_50k.txt
 ```
 
@@ -990,7 +1005,55 @@ python tools/ukrainian/filter_silver.py --pred_file output/eval/silver_v7/pred_s
 **v8**: донавчання v7 на 19 858 рядках train v7 + 16 261 рядок silver (Kaggle
 T4, 2 епохи, батч 10, lr 0,00005, `tools/ukrainian/kaggle/train_rec_v8.py`).
 Тижнева GPU-квота Kaggle цього разу — лише 6 год (оновлення 24.10), тому
-навчання обмежене ≈ 1,5 год.
+навчання обмежене: 2 епохи (7 222 ітерації), уся сесія — 1 год 34 хв. Найкраща
+модель — у кінці 2-ї епохи (val CER 13,8 % проти 15,3 % у v7), тобто
+подальше навчання, імовірно, ще покращило б результат. Модель:
+`output/uk_handwritten_rec_gpu_v8/best_accuracy/inference`.
+
+Рядки (`eval_rec.py --batch_size 1`, ті самі test-набори):
+
+| Модель | кропи детектора (600): CER / WER | рамки розмітки (647): CER / WER | реальний друк (557): CER |
+|---|---|---|---|
+| v7 | 16,7 % / 53,4 % | 22,2 % / 57,9 % | 19,1 % |
+| **v8** | **15,4 % / 50,0 %** | **21,0 % / 54,9 %** | 12,3 % |
+
+Повний конвеєр, усі 385 тестових сторінок (донавчений детектор 960 px,
+підібрані пороги):
+
+| Розпізнавання | CER рядків | CER сторінки | WER сторінки |
+|---|---|---|---|
+| v7 | 23,7 % | 22,2 % | 58,3 % |
+| **v8** | 23,3 % | **21,8 %** | 58,0 % |
+| v7 + словникова корекція | 22,5 % | 21,1 % | **50,7 %** |
+| **v8 + словникова корекція** | **22,3 %** | **20,9 %** | 51,3 % |
+
+На рівні сторінки виграш v8 менший, ніж на рядках, бо на сторінці значну
+частку помилок дають детекція (пропущені й зайві рядки) і порядок читання.
+
+За типом джерела, усі 385 тестових сторінок (фінальна конфігурація: v8 +
+словникова корекція):
+
+| Джерело (сторінок) | `PaddleOCR(lang="uk")`: детекція H / CER / WER сторінки | фінальний конвеєр: детекція H / CER / WER сторінки |
+|---|---|---|
+| диктанти (150) | 0,479 / 69,3 % / 95,9 % | **0,954 / 15,7 % / 39,1 %** |
+| шкільні зошити (100) | 0,353 / 83,7 % / 99,8 % | **0,892 / 27,5 % / 67,7 %** |
+| університетські конспекти (84) | 0,679 / 76,6 % / 96,5 % | **0,852 / 29,7 % / 68,3 %** |
+| архівні документи (51) | 0,639 / 47,8 % / 77,0 % | **0,906 / 21,0 % / 57,8 %** |
+
+**Демо для доповіді (v8):** `output/demo_v8` (ті самі 7 сторінок, що й
+`output/demo`, `summary.md` порівнює з попереднім демо на v7). CER сторінки
+знизився на 6 з 7 сторінок (архів 45,0 → 37,4 % і 37,4 → 31,9 %, конспект
+44,0 → 39,3 %, школа 25,1 → 20,4 %), на одній сторінці диктанту зріс
+(5,7 → 8,3 %).
+
+```bash
+python tools/ukrainian/examples/make_demo.py --det_label train_data/rukopys_raw/test/det_test.txt \
+    --data_dir train_data/rukopys_raw/test --pages <сторінки>.jpg \
+    --det_model_dir output/uk_handwritten_det_server/best_accuracy/inference \
+    --rec_model_dir output/uk_handwritten_rec_gpu_v8/best_accuracy/inference \
+    --lexicon /usr/share/dict/ukrainian --lexicon_freq train_data/lexicon/uk_50k.txt \
+    --output_dir output/demo_v8
+```
 
 ### Висновки
 
@@ -1011,8 +1074,17 @@ T4, 2 епохи, батч 10, lr 0,00005, `tools/ukrainian/kaggle/train_rec_v8.
   розпізнавання v7: CER сторінки 24,3 %, WER 62,5 % на 40 сторінках
   (`PaddleOCR(lang="uk")`: 70,4 % / 94,5 %); на всіх 385 тестових сторінках
   22,9 % / 60,0 % (офіційний 69,2 % / 93,5 %), з підібраними порогами детектора
-  22,2 % / 58,3 %, а зі словниковою постобробкою — 21,1 % / 50,7 %. Текст здебільшого читабельний, але не безпомилковий;
-  найкраще — диктанти (CER 17,9 %), найважче — університетські конспекти (33,3 %).
+  22,2 % / 58,3 %, а зі словниковою постобробкою — 21,1 % / 50,7 %.
+* **Фінальний рукописний конвеєр** — донавчений детектор (960 px, підібрані
+  пороги) + розпізнавання **v8** (v7, донавчена з відібраними рядками RUKOPYS
+  silver) + словникова корекція: на всіх 385 тестових сторінках **CER 20,9 %,
+  WER 51,3 %** (`PaddleOCR(lang="uk")`: 69,2 % / 93,5 %); на тестових рядках
+  детектора CER 15,4 % без корекції. Текст здебільшого читабельний, але не
+  безпомилковий; найкраще — диктанти, найважче — університетські конспекти.
+* Друкований текст: друкована v2 (машинописна синтетика + реальні друковані
+  рядки RUKOPYS train) — CER 6,7 % на реальному архівному друці (v1 — 8,4 %,
+  офіційна — 11,8 %); для чистих сучасних документів обидві ≤ 1 % на
+  згенерованому документі, але реального сучасного test-набору немає.
 * Одна модель не покриває обидва сценарії: рукописне донавчання погіршує
   друкований текст (1,5 % → 17,7 % CER) — використовуйте окремі моделі.
 
