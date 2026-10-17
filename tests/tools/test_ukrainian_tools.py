@@ -859,3 +859,16 @@ def test_filter_silver_keeps_agreeing_lines():
     assert kept[0][1] == "Україна"  # the silver label is kept
     loose = list(filter_silver.select(rows, max_cer=0.15, min_chars=3))
     assert [k[0] for k in loose] == ["a.jpg", "b.jpg"]
+
+
+def test_filter_silver_lexicon_band():
+    filter_silver = _load("filter_silver")
+    lexicon = {"україна", "велика", "держава"}
+    rows = [
+        # (image, prediction, silver): 3 edits / 20 chars in both rows
+        ("a.jpg", "Укрвїна велака дежава", "Україна велика держава"),
+        ("b.jpg", "Україна велика держава", "Укрвїна велака дежава"),  # not words
+    ]
+    assert list(filter_silver.select(rows, max_cer=0.1)) == []
+    kept = list(filter_silver.select(rows, 0.1, lexicon=lexicon, max_cer_lexicon=0.35))
+    assert [k[0] for k in kept] == ["a.jpg"]
