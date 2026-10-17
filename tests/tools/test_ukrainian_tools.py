@@ -730,6 +730,53 @@ def test_convert_det_label_resume(tmp_path):
     assert not (tmp_path / "det.txt.partial").exists()
 
 
+def test_convert_rec_resume(tmp_path):
+    split = tmp_path / "split"
+    (split / "images").mkdir(parents=True)
+    meta = []
+    for name in ("p1", "p2", "p3"):
+        cv2.imwrite(
+            str(split / "images" / (name + ".jpg")),
+            np.full((100, 200, 3), 255, np.uint8),
+        )
+        meta.append(
+            {
+                "file_name": "images/{}.jpg".format(name),
+                "image_width": 200,
+                "image_height": 100,
+                "regions": [
+                    {
+                        "bbox": [10, 10, 150, 40],
+                        "type": "handwritten",
+                        "language": "uk",
+                        "legibility": "legible",
+                        "text": "рядок " + name,
+                    }
+                ],
+            }
+        )
+    (split / "metadata.jsonl").write_text(
+        "\n".join(json.dumps(m) for m in meta), encoding="utf-8"
+    )
+    out = tmp_path / "o"
+    out.mkdir()
+    # interrupted run: page 1 finished, page 2 only half written
+    (out / "r.txt.partial").write_text(
+        "images/p1__0000.jpg\tDONE p1\n#DONE\timages/p1.jpg\n"
+        "images/p2__0000.jpg\tрядок p2\n#DONE\timages/p2",
+        encoding="utf-8",
+    )
+    argv = ["--split_dir", str(split), "--output_dir", str(out), "--name", "r"]
+    convert_rukopys.main(argv + ["--resume"])
+    lines = (out / "r.txt").read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "images/p1__0000.jpg\tDONE p1",  # page 1 was not processed again
+        "images/p2__0000.jpg\tрядок p2",
+        "images/p3__0000.jpg\tрядок p3",
+    ]
+    assert not (out / "r.txt.partial").exists()
+
+
 def test_handwritten_mode_limits_detection_size(monkeypatch):
     pytest.importorskip("paddlex")
     monkeypatch.syspath_prepend(str(TOOLS / "examples"))
@@ -797,3 +844,18 @@ def test_lexicon_ambiguity_and_frequency(corrector, lexicon_file):
 def test_lexicon_keeps_word_hyphenated_at_line_end(corrector):
     assert corrector.correct("Украіна -") == "Украіна -"
     assert corrector.correct("Украіна - це") == "Україна - це"
+
+
+def test_filter_silver_keeps_agreeing_lines():
+    filter_silver = _load("filter_silver")
+    rows = [
+        ("a.jpg", "Україна", "Україна"),  # agree
+        ("b.jpg", "Украіна", "Україна"),  # 1 error / 7 chars > 0.1
+        ("c.jpg", "Двадцять друге", "Двадцтттт друге"),  # silver garbage
+        ("d.jpg", "і", "і"),  # too short
+    ]
+    kept = list(filter_silver.select(rows, max_cer=0.1, min_chars=3))
+    assert [k[0] for k in kept] == ["a.jpg"]
+    assert kept[0][1] == "Україна"  # the silver label is kept
+    loose = list(filter_silver.select(rows, max_cer=0.15, min_chars=3))
+    assert [k[0] for k in loose] == ["a.jpg", "b.jpg"]

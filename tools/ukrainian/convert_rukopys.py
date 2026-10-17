@@ -200,6 +200,9 @@ class DetectorCropper(object):
         return self.crop(img_bgr, [poly])[0]
 
 
+DONE_MARKER = "#DONE\t"
+
+
 def convert(args):
     stats = collections.Counter()
     cropper = None
@@ -221,22 +224,50 @@ def convert(args):
     ) as f:
         records = [json.loads(line) for line in f if line.strip()]
 
-    # --resume (det labels only): every page is appended to <det_label>.partial
-    # immediately, so an interrupted run continues where it stopped
-    partial, done_pages = None, set()
+    # --resume: every finished page is appended to <det_label>.partial and /
+    # or <name>.txt.partial (its line crops followed by a "#DONE<TAB>page"
+    # marker) immediately, so an interrupted run continues where it stopped
+    partial, rec_partial, done_pages = None, None, None
+    rec_path = os.path.join(args.output_dir, args.name + ".txt")
     if args.resume:
-        partial_path = args.det_label + ".partial"
-        if os.path.isfile(partial_path):
-            with open(partial_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.endswith("\n") and "\t" in line:
-                        det_lines.append(line.rstrip("\n"))
-                        done_pages.add(line.split("\t", 1)[0])
-            # rewrite without a possibly truncated last line
-            with open(partial_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write("".join(line + "\n" for line in det_lines))
-        partial = open(partial_path, "a", encoding="utf-8", newline="\n")
-        stats["pages_resumed"] = len(done_pages)
+        if not args.no_rec:
+            done_pages = set()
+            rec_partial_path = rec_path + ".partial"
+            if os.path.isfile(rec_partial_path):
+                page_lines = []
+                with open(rec_partial_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if not line.endswith("\n"):
+                            break  # truncated by the interruption
+                        line = line.rstrip("\n")
+                        if line.startswith(DONE_MARKER):
+                            done_pages.add(line[len(DONE_MARKER) :])
+                            rec_lines.extend(page_lines)
+                            page_lines = []
+                        else:
+                            page_lines.append(line)
+                with open(rec_partial_path, "w", encoding="utf-8", newline="\n") as f:
+                    f.write("".join(line + "\n" for line in rec_lines))
+                    f.write("".join(DONE_MARKER + p + "\n" for p in sorted(done_pages)))
+            rec_partial = open(rec_partial_path, "a", encoding="utf-8", newline="\n")
+        if args.det_label:
+            partial_path = args.det_label + ".partial"
+            if os.path.isfile(partial_path):
+                with open(partial_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if not (line.endswith("\n") and "\t" in line):
+                            continue
+                        page_name = line.split("\t", 1)[0]
+                        if done_pages is None or page_name in done_pages:
+                            det_lines.append(line.rstrip("\n"))
+                if done_pages is None:
+                    done_pages = {ln.split("\t", 1)[0] for ln in det_lines}
+                # rewrite without a possibly truncated last line
+                with open(partial_path, "w", encoding="utf-8", newline="\n") as f:
+                    f.write("".join(line + "\n" for line in det_lines))
+            partial = open(partial_path, "a", encoding="utf-8", newline="\n")
+        stats["pages_resumed"] = len(done_pages or ())
+    done_pages = done_pages or set()
 
     for rec in records:
         if rec["file_name"] in done_pages:
@@ -252,6 +283,7 @@ def convert(args):
             print("skip {}: {}".format(page_path, e))
             continue
         stats["pages"] += 1
+        first_rec_line = len(rec_lines)
         uuid = os.path.splitext(os.path.basename(rec["file_name"]))[0]
         det_boxes, candidates, det_box_of = [], [], {}
         for k, region in enumerate(rec.get("regions", [])):
@@ -369,16 +401,24 @@ def convert(args):
         if partial is not None:
             partial.write(det_lines[-1] + "\n")
             partial.flush()
+        if rec_partial is not None:
+            rec_partial.write(
+                "".join(line + "\n" for line in rec_lines[first_rec_line:])
+                + DONE_MARKER
+                + rec["file_name"]
+                + "\n"
+            )
+            rec_partial.flush()
 
-    rec_path = os.path.join(args.output_dir, args.name + ".txt")
     with open(rec_path, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(rec_lines) + ("\n" if rec_lines else ""))
     if args.det_label:
         with open(args.det_label, "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(det_lines) + ("\n" if det_lines else ""))
-    if partial is not None:
-        partial.close()
-        os.remove(partial.name)
+    for f in (partial, rec_partial):
+        if f is not None:
+            f.close()
+            os.remove(f.name)
     return stats, rec_path
 
 
@@ -424,7 +464,7 @@ def main(argv=None):
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="with --no_rec: continue an interrupted run from <det_label>.partial",
+        help="continue an interrupted run from <name>.txt.partial / <det_label>.partial",
     )
     parser.add_argument("--det_model_name", default="PP-OCRv5_server_det")
     parser.add_argument(
@@ -446,8 +486,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.refine_det_label and args.crop_source != "det":
         parser.error("--refine_det_label requires --crop_source det")
-    if args.resume and not (args.no_rec and args.det_label):
-        parser.error("--resume requires --no_rec and --det_label")
+    if args.resume and args.no_rec and not args.det_label:
+        parser.error("--resume with --no_rec requires --det_label")
 
     stats, rec_path = convert(args)
     for k, v in sorted(stats.items()):
