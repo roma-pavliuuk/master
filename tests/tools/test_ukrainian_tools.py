@@ -43,6 +43,7 @@ gen_synth = _load("gen_synth_printed")
 convert_rukopys = _load("convert_rukopys")
 eval_rec = _load("eval_rec")
 fetch_rukopys = _load("fetch_rukopys")
+lexicon_correct = _load("lexicon_correct")
 
 
 def _write_img(path, w=120, h=32):
@@ -745,9 +746,54 @@ def test_handwritten_mode_limits_detection_size(monkeypatch):
     uk_ocr_common.build_uk_ocr("handwritten")
     assert captured["text_det_limit_side_len"] == 960
     assert captured["text_det_limit_type"] == "max"
+    assert captured["text_det_unclip_ratio"] == 1.8
     captured.clear()
     uk_ocr_common.build_uk_ocr("handwritten", text_det_limit_side_len=1280)
     assert captured["text_det_limit_side_len"] == 1280
     captured.clear()
     uk_ocr_common.build_uk_ocr("printed")
     assert "text_det_limit_side_len" not in captured
+
+
+
+@pytest.fixture
+def lexicon_file(tmp_path):
+    lex = tmp_path / "lex.txt"
+    lex.write_text(
+        "україна\nукраїни\nпід'їзд\nграматика\nлист\nлис\n", encoding="utf-8"
+    )
+    return lex
+
+
+@pytest.fixture
+def corrector(tmp_path, lexicon_file):
+    freq = tmp_path / "freq.txt"
+    freq.write_text("лист 50\nлис 3\nнеіснуюче 9\n", encoding="utf-8")
+    return lexicon_correct.LexiconCorrector([str(lexicon_file)], str(freq), min_len=4)
+
+
+def test_lexicon_corrects_single_edit_and_keeps_case(corrector):
+    assert corrector.correct("Украіна") == "Україна"  # substitution
+    assert corrector.correct("УКРАЇНАА") == "УКРАЇНА"  # deletion, upper case
+    assert corrector.correct("грамтаика") == "граматика"  # transposition
+    assert corrector.correct("граммматика") == "граммматика"  # distance 2: kept
+
+
+def test_lexicon_keeps_known_short_and_mixed_words(corrector):
+    text = "під'їзд під’їзд підʼїзд"  # every apostrophe variant is known
+    assert corrector.correct(text) == text
+    assert corrector.correct("кот") == "кот"  # shorter than min_len
+    assert corrector.correct("Iкраїна") == "Iкраїна"  # Latin I: not Cyrillic
+    assert corrector.correct("Украіна2") == "Украіна2"
+
+
+def test_lexicon_ambiguity_and_frequency(corrector, lexicon_file):
+    # "лиса": "лис" (deletion) and "лист" (substitution); frequency decides
+    assert corrector.correct("лиса") == "лист"
+    plain = lexicon_correct.LexiconCorrector([str(lexicon_file)], min_len=4)
+    assert plain.correct("лиса") == "лиса"  # ambiguous without frequencies
+
+
+def test_lexicon_keeps_word_hyphenated_at_line_end(corrector):
+    assert corrector.correct("Украіна -") == "Украіна -"
+    assert corrector.correct("Украіна - це") == "Україна - це"

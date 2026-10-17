@@ -23,11 +23,20 @@ configs/rec/PP-OCRv5/multi_language/uk_handwritten_PP-OCRv5_mobile_rec.yml
     # recognize already cropped line images (no detection)
     python tools/ukrainian/examples/ocr_handwritten.py train_data/uk_handwritten/images \\
         --rec_model_dir output/uk_handwritten_rec_ppocrv5/best_accuracy/inference --lines
+    # lexicon post-correction (tools/ukrainian/lexicon_correct.py)
+    python tools/ukrainian/examples/ocr_handwritten.py page.jpg --rec_model_dir ... \
+        --lexicon /usr/share/dict/ukrainian --lexicon_freq train_data/lexicon/uk_50k.txt
 """
 
 import argparse
+import os
+import sys
 
-from uk_ocr_common import (
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+from lexicon_correct import add_lexicon_args, corrector_from_args  # noqa: E402
+
+from uk_ocr_common import (  # noqa: E402
     UK_REC_MODEL_NAME,
     build_uk_ocr,
     lines_to_text,
@@ -53,7 +62,10 @@ def main():
         "--lines", action="store_true", help="inputs are single text-line crops"
     )
     parser.add_argument("--device", default="cpu")
+    add_lexicon_args(parser)
     args = parser.parse_args()
+    corrector = corrector_from_args(args)
+    fix = corrector.correct if corrector else (lambda text: text)
 
     if args.lines:
         from paddleocr import TextRecognition
@@ -66,7 +78,7 @@ def main():
         for res in rec.predict(args.input):
             print(
                 "{}\t{}\t{:.3f}".format(
-                    res["input_path"], res["rec_text"], res["rec_score"]
+                    res["input_path"], fix(res["rec_text"]), res["rec_score"]
                 )
             )
         return
@@ -80,7 +92,10 @@ def main():
     )
     for res in ocr.predict(args.input):
         print("=== {}".format(res["input_path"]))
-        print(lines_to_text(result_to_lines(res)))
+        lines = result_to_lines(res)
+        for ln in lines:
+            ln["text"] = fix(ln["text"])
+        print(lines_to_text(lines))
 
 
 if __name__ == "__main__":

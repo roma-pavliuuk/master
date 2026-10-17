@@ -266,6 +266,51 @@ def _background(rng: random.Random, h: int, w: int, dark: bool):
     return np.clip(img, 0, 255)
 
 
+def render_typewriter_line(text: str, font_path: str, rng: random.Random):
+    """Typewriter-like line: monospace font, wide letter spacing (as in 1920s
+    typed documents), slightly jumping baseline, uneven / worn ink and aged
+    paper. The label stays the normal text without the extra spaces."""
+    size = rng.randint(22, 56)
+    font = ImageFont.truetype(font_path, size)
+    tracking = size * rng.uniform(0.0, 0.6)  # extra space after every char
+    word_gap = size * rng.uniform(0.0, 0.8)
+    advances = []
+    for ch in text:
+        adv = font.getlength(ch) + tracking + (word_gap if ch == " " else 0)
+        advances.append(adv)
+    left, top, right, bottom = font.getbbox(text)
+    th = bottom - top
+    pad_x = int(size * rng.uniform(0.2, 0.8))
+    pad_y = int(size * rng.uniform(0.2, 0.5))
+    w = int(sum(advances) + 2 * pad_x)
+    h = th + 2 * pad_y + 4
+    # aged paper: yellowish / greyish, low contrast
+    base = np.array(
+        [rng.randint(200, 240), rng.randint(190, 230), rng.randint(150, 210)],
+        np.float32,
+    )
+    bg = np.ones((h, w, 3), np.float32) * base
+    bg += np.random.default_rng(rng.randrange(1 << 30)).normal(
+        0, rng.uniform(3, 12), (h, w, 1)
+    )
+    canvas = Image.fromarray(np.clip(bg, 0, 255).astype(np.uint8))
+    draw = ImageDraw.Draw(canvas)
+    ribbon = rng.choice([(30, 30, 30), (50, 40, 35), (35, 35, 90), (70, 40, 90)])
+    x = pad_x
+    for ch, adv in zip(text, advances):
+        if ch != " ":
+            shade = rng.uniform(0.0, 0.45)  # worn / light strikes
+            color = tuple(int(c + (base[i] - c) * shade) for i, c in enumerate(ribbon))
+            dy = rng.randint(-2, 2)
+            draw.text((x, pad_y - top + dy), ch, font=font, fill=color)
+        x += adv
+    img = np.asarray(canvas).copy()
+    if rng.random() < 0.5:  # ink bleed or thin strokes
+        k = np.ones((2, 2), np.uint8)
+        img = cv2.erode(img, k) if rng.random() < 0.6 else cv2.dilate(img, k)
+    return img
+
+
 def render_line(text: str, font_path: str, rng: random.Random):
     size = rng.randint(18, 64)
     font = ImageFont.truetype(font_path, size)
@@ -395,6 +440,12 @@ def main(argv=None):
     parser.add_argument("--image_subdir", default="images")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--list_fonts", action="store_true")
+    parser.add_argument(
+        "--typewriter_ratio",
+        type=float,
+        default=0.0,
+        help="share of typewriter-style lines (monospace fonts, letter spacing, worn ink)",
+    )
     args = parser.parse_args(argv)
 
     rng = random.Random(args.seed)
@@ -413,6 +464,9 @@ def main(argv=None):
             "no font with full Ukrainian coverage found in {}".format(args.font_dir)
         )
 
+    mono_fonts = [f for f in fonts if "mono" in font_family(f).lower()]
+    if args.typewriter_ratio > 0 and not mono_fonts:
+        sys.exit("--typewriter_ratio needs monospace fonts (e.g. DejaVu Sans Mono)")
     corpus = []
     for path in args.corpus:
         with open(path, "r", encoding="utf-8") as f:
@@ -439,7 +493,13 @@ def main(argv=None):
                 if rejected > 100 * args.num:
                     sys.exit("fonts do not cover the corpus characters")
                 continue
-            img = augment(render_line(text, font_path, rng), rng)
+            if mono_fonts and rng.random() < args.typewriter_ratio:
+                font_path = rng.choice(mono_fonts)
+                if not coverage.covers(font_path, text):
+                    continue
+                img = augment(render_typewriter_line(text, font_path, rng), rng)
+            else:
+                img = augment(render_line(text, font_path, rng), rng)
             stem = os.path.splitext(os.path.basename(font_path))[0].replace(" ", "_")
             name = "{}__{}_{:06d}.jpg".format(stem, prefix, written)
             cv2.imwrite(

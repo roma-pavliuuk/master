@@ -26,7 +26,16 @@ UK_DET_MODEL_NAME = "PP-OCRv5_server_det"
 # on a page downscaled to 960 px (longest side) finds far more lines than the
 # pipeline default (full resolution): on 40 RUKOPYS test pages page CER
 # 34.3 % -> 26.6 % with the official detector (docs/ukrainian_ocr.md).
-HANDWRITTEN_DET_LIMIT = {"text_det_limit_side_len": 960, "text_det_limit_type": "max"}
+# DB post-processing thresholds were tuned on 35 validation pages (unclip 1.8
+# expands boxes over ascenders / descenders): on all 385 test pages page CER
+# 22.9 % -> 22.2 % with the fine-tuned detector + v7 recognizer.
+HANDWRITTEN_DET_LIMIT = {
+    "text_det_limit_side_len": 960,
+    "text_det_limit_type": "max",
+    "text_det_thresh": 0.4,
+    "text_det_box_thresh": 0.5,
+    "text_det_unclip_ratio": 1.8,
+}
 
 logger = logging.getLogger("uk_ocr")
 
@@ -58,9 +67,9 @@ def build_uk_ocr(
     * printed / handwritten with ``rec_model_dir``: a fine-tuned Ukrainian model
     * handwritten without ``rec_model_dir`` falls back to the official model,
       which is NOT trained for handwriting (see docs/ukrainian_ocr.md)
-    * handwritten mode detects lines on the page downscaled to 960 px
-      (``HANDWRITTEN_DET_LIMIT``); pass ``text_det_limit_side_len`` /
-      ``text_det_limit_type`` to override
+    * handwritten mode detects lines on the page downscaled to 960 px with
+      tuned DB thresholds (``HANDWRITTEN_DET_LIMIT``); pass
+      ``text_det_limit_side_len``, ``text_det_thresh``, ... to override
     """
     from paddleocr import PaddleOCR
 

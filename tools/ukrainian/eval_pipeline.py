@@ -43,6 +43,7 @@ import sys
 __dir__ = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.abspath(os.path.join(__dir__, "../..")))
 sys.path.insert(0, os.path.join(__dir__, "examples"))
+sys.path.insert(0, __dir__)
 
 from ppocr.utils.ocr_error_rate import (
     ErrorRateAccumulator,
@@ -52,6 +53,7 @@ from ppocr.utils.ukrainian import (
     APOSTROPHE_MODIFIER,
     APOSTROPHE_TYPOGRAPHIC,
 )  # noqa: E402
+from lexicon_correct import add_lexicon_args, corrector_from_args  # noqa: E402
 
 APOSTROPHES = {APOSTROPHE_MODIFIER: APOSTROPHE_TYPOGRAPHIC}
 
@@ -174,6 +176,16 @@ def main(argv=None):
         help="detector input size limit (handwritten default: 960, longest side)",
     )
     parser.add_argument("--det_limit_type", choices=["max", "min"], default="max")
+    parser.add_argument(
+        "--det_thresh", type=float, help="DB pixel threshold (default 0.3)"
+    )
+    parser.add_argument(
+        "--det_box_thresh", type=float, help="DB box score threshold (default 0.6)"
+    )
+    parser.add_argument(
+        "--det_unclip_ratio", type=float, help="DB box expansion (default 1.5)"
+    )
+    add_lexicon_args(parser)
     parser.add_argument("--iou", type=float, default=0.5)
     parser.add_argument("--max_pages", type=int, default=0)
     parser.add_argument("--output", help="JSON report path")
@@ -190,6 +202,13 @@ def main(argv=None):
             text_det_limit_side_len=args.det_limit_side_len,
             text_det_limit_type=args.det_limit_type,
         )
+    for opt, key in (
+        ("det_thresh", "text_det_thresh"),
+        ("det_box_thresh", "text_det_box_thresh"),
+        ("det_unclip_ratio", "text_det_unclip_ratio"),
+    ):
+        if getattr(args, opt) is not None:
+            extra[key] = getattr(args, opt)
     ocr = build_uk_ocr(
         args.mode,
         rec_model_dir=args.rec_model_dir,
@@ -198,6 +217,7 @@ def main(argv=None):
         device=args.device,
         **extra,
     )
+    corrector = corrector_from_args(args)
     line_acc, page_acc = ErrorRateAccumulator(), ErrorRateAccumulator()
     det_counts = {"tp": 0, "gt": 0, "pred": 0}
     for img_rel, label in pages:
@@ -205,6 +225,8 @@ def main(argv=None):
         pred_items = [
             (ln["poly"], ln["box"], ln["text"]) for ln in result_to_lines(res)
         ]
+        if corrector:
+            pred_items = [(p, b, corrector.correct(t)) for p, b, t in pred_items]
         evaluate_page(
             json.loads(label), pred_items, args.iou, line_acc, page_acc, det_counts
         )
@@ -219,6 +241,9 @@ def main(argv=None):
         "det_model_dir": args.det_model_dir,
         "det_model_name": args.det_model_name,
         "det_limit_side_len": args.det_limit_side_len,
+        "det_params": {k: v for k, v in extra.items()},
+        "lexicon": args.lexicon,
+        "lexicon_freq": args.lexicon_freq,
         "num_pages": len(pages),
         "detection": {
             "precision": precision,
