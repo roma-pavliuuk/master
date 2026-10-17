@@ -18,6 +18,7 @@ from difflib import SequenceMatcher
 import numpy as np
 import string
 from .bleu import compute_bleu_score, compute_edit_distance
+from ppocr.utils.ocr_error_rate import ErrorRateAccumulator, normalize_for_eval
 
 
 class RecMetric(object):
@@ -76,6 +77,56 @@ class RecMetric(object):
         self.correct_num = 0
         self.all_num = 0
         self.norm_edit_dis = 0
+
+
+class RecErrorRateMetric(RecMetric):
+    """RecMetric extended with corpus level CER and WER.
+
+    CER = (S + D + I) / N on characters, WER is the same on whitespace
+    separated words. ``acc`` and ``norm_edit_dis`` are computed exactly as in
+    RecMetric so ``main_indicator: acc`` keeps working for best-model
+    selection. ``char_acc = max(0, 1 - CER)`` is a higher-is-better indicator
+    for tasks where whole-line accuracy stays near zero (e.g. handwriting).
+    Spaces are kept by default because WER needs word boundaries.
+    """
+
+    def __init__(
+        self,
+        main_indicator="acc",
+        is_filter=False,
+        ignore_space=False,
+        ignore_case=False,
+        **kwargs,
+    ):
+        self.ignore_case = ignore_case
+        super().__init__(main_indicator, is_filter, ignore_space, **kwargs)
+
+    def __call__(self, pred_label, *args, **kwargs):
+        metric = super().__call__(pred_label, *args, **kwargs)
+        preds, labels = pred_label
+        batch_acc = ErrorRateAccumulator()
+        for (pred, _), (target, _) in zip(preds, labels):
+            pred = normalize_for_eval(pred, ignore_case=self.ignore_case)
+            target = normalize_for_eval(target, ignore_case=self.ignore_case)
+            batch_acc.update(target, pred)
+            self.error_rate.update(target, pred)
+        summary = batch_acc.summary()
+        metric["cer"] = summary["cer"]
+        metric["wer"] = summary["wer"]
+        metric["char_acc"] = max(0.0, 1.0 - summary["cer"])
+        return metric
+
+    def get_metric(self):
+        summary = self.error_rate.summary()
+        metric = super().get_metric()
+        metric["cer"] = summary["cer"]
+        metric["wer"] = summary["wer"]
+        metric["char_acc"] = max(0.0, 1.0 - summary["cer"])
+        return metric
+
+    def reset(self):
+        super().reset()
+        self.error_rate = ErrorRateAccumulator()
 
 
 class CNTMetric(object):

@@ -1,0 +1,5 @@
+{"id": "prozaik/uk-ocr-train-hw-rec-v7", "title": "uk-ocr-train-hw-rec-v7", "code_file": "train_rec.py",
+ "language": "python", "kernel_type": "script", "is_private": "true", "enable_gpu": "true", "enable_tpu": "false",
+ "enable_internet": "true", "machine_shape": "NvidiaTeslaT4",
+ "dataset_sources": ["prozaik/uk-ocr-code", "prozaik/uk-ocr-handwritten-data-v7"],
+ "competition_sources": [], "kernel_sources": [], "model_sources": []}

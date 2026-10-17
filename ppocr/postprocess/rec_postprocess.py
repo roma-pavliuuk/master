@@ -102,8 +102,9 @@ class BaseRecLabelDecode(object):
             else:
                 c_state = "splitter"
 
-            # Handle apostrophes in French words like "n'êtes"
-            if char == "'" and state == "en&num":
+            # Handle apostrophes in French words like "n'êtes" and Ukrainian
+            # words like "під'їзд" / "під’їзд" / "підʼїзд"
+            if char in ("'", "\u2019", "\u02bc") and state == "en&num":
                 c_state = "en&num"
 
             if (
