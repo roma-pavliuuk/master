@@ -9,7 +9,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 EPOCHS = 30          # pages are small (<= 1280 px): faster than the full-size run
 BATCH = 8            # fits in 15 GB (timing run)
 LR = 0.00005         # decimal on purpose: YAML reads 5e-05 as a string
-TRAIN_HOURS = 6.0    # keep the whole session well below Kaggle limits
+TRAIN_HOURS = 4.0    # the weekly GPU quota can be only 6 h; outputs are lost if it runs out
 WORK = "/kaggle/working"
 PAGES = "/tmp/rukopys"  # not saved as kernel output
 OUT = os.path.join(WORK, "output", "uk_handwritten_det_server_960")
@@ -31,7 +31,12 @@ def find(pattern):
     return hits[0]
 
 
-sh(sys.executable + " -m pip install -q paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/")
+# wheel from the CPU kernel uk-ocr-paddle-wheel (kernel source): the Paddle mirror needs ~20 min of GPU time
+wheels = glob.glob("/kaggle/input/**/paddlepaddle_gpu-3.2.0-*.whl", recursive=True)
+if wheels:
+    sh(sys.executable + " -m pip install -q " + wheels[0])
+else:
+    sh(sys.executable + " -m pip install -q paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/")
 repo = os.path.join(WORK, "repo")
 shutil.copytree(os.path.dirname(os.path.dirname(find("tools/train.py"))), repo, dirs_exist_ok=True)
 sh(sys.executable + " -m pip install -q -r {}/requirements.txt huggingface_hub".format(repo))
@@ -96,7 +101,8 @@ with open(cfg, "w", encoding="utf-8") as f:
 # baseline: official detector on the validation pages
 sh("{} tools/eval.py -c {} -o Global.use_gpu=True Global.pretrained_model={} "
    "Eval.dataset.data_dir={}/ 'Eval.dataset.label_file_list=[{}/det_train_refined_val.txt]' "
-   "2>&1 | tee {}/det_eval_baseline.log".format(sys.executable, cfg, init_weights, data_dir, labels, WORK), check=False)
+   "> {}/det_eval_baseline.log 2>&1".format(sys.executable, cfg, init_weights, data_dir, labels, WORK), check=False)
+subprocess.call("pkill -9 -f 'tools/eva[l].py'", shell=True)
 opts = [
     "Global.use_gpu=True", "Global.epoch_num={}".format(EPOCHS),
     "Global.eval_batch_step=[0,{}]".format(iters_per_epoch), "Global.print_batch_step=20",
@@ -110,8 +116,11 @@ opts = [
     "'Eval.dataset.label_file_list=[{}/det_train_refined_val.txt]'".format(labels),
     "Eval.loader.num_workers=2",
 ]
-rc = subprocess.call("timeout {}s {} tools/train.py -c {} -o {} 2>&1 | tee -a {}/det_train.log".format(
+# no "| tee": after a timeout the data loader workers keep a pipe open and the kernel hangs forever
+rc = subprocess.call("timeout -k 60 {}s {} tools/train.py -c {} -o {} > {}/det_train.log 2>&1".format(
     int(TRAIN_HOURS * 3600), sys.executable, cfg, " ".join(opts), WORK), shell=True)
+subprocess.call("pkill -9 -f 'tools/trai[n].py'", shell=True)
+subprocess.call("grep -E 'best metric|Error' {}/det_train.log | tail -3".format(WORK), shell=True)
 print("train exit", rc, "min", round((time.time() - T0) / 60, 1), flush=True)
 shutil.rmtree(repo, ignore_errors=True)
 print("total min", round((time.time() - T0) / 60, 1))
