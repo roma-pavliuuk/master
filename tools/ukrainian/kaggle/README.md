@@ -10,7 +10,7 @@ Scripts that ran on a free Kaggle T4 GPU (see `docs/ukrainian_ocr.md`):
 | `train_rec_printed_v2.py` | printed recognizer v2 (8 epochs from printed v1) | code, one tar `*.tar.bin` with `uk_printed_v2/` (synthetic incl. typewriter style + real RUKOPYS train printed lines) and `weights/uk_printed_v1_best.pdparams` |
 | `train_rec_v8.py` | handwritten recognizer v8 (from v7, + filtered RUKOPYS silver) | code, `uk_handwritten_v7/`, one tar `*.tar.bin` with `uk_handwritten_silver/` and `weights/uk_handwritten_v7_best.pdparams` |
 | `train_rec_v8b.py` | handwritten recognizer v8b: one more epoch from v8 | as v8 + `uk_handwritten_v8_best.pdparams`; kernel source `uk-ocr-paddle-wheel` |
-| `train_rec_v9.py` | handwritten recognizer v9 (3 epochs from v8, train x2 + all selected silver) | as v8 + `uk-ocr-silver2-blob`; kernel source `uk-ocr-paddle-wheel` |
+| `train_rec_v9_stage.py`, `run_v9_stages.sh` | handwritten recognizer v9: 3 Kaggle sessions of 1 epoch each from v8 (train x2 + all selected silver); a single 5 h session hung | as v8 + `uk-ocr-silver2-blob`; kernel sources `uk-ocr-paddle-wheel` and the previous stage |
 | `train_det_server_960.py` | server detector re-trained on pages downscaled to <= 1280 px (run 18.10: no gain in the pipeline) | code, detection labels, `weights/uk_det_server_v1.pdparams`; kernel source `uk-ocr-paddle-wheel` |
 | `get_paddle_wheel.py` | CPU-only kernel: downloads the `paddlepaddle-gpu` wheel (3 min, no GPU quota) | — |
 

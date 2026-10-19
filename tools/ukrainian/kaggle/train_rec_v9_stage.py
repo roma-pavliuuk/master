@@ -1,5 +1,8 @@
-"""Kaggle GPU kernel: Ukrainian HANDWRITTEN recognizer v9 = v8 fine-tuned for 3 epochs (one cosine
-schedule) on the manually annotated RUKOPYS train lines (repeated x2: the only dictation data) plus
+"""Kaggle GPU kernel, one STAGE of v9 (sessions longer than ~3 h hung twice on Kaggle and lost their
+output, so v9 is trained as 3 sessions of one epoch each, lr peak 5e-5 -> 3e-5 -> 1.5e-5, every stage
+starting from the last weights of the previous one, attached as kernel source).
+
+Ukrainian HANDWRITTEN recognizer v9 = v8 fine-tuned for 3 epochs on the manually annotated RUKOPYS train lines (repeated x2: the only dictation data) plus
 all selected RUKOPYS silver lines: 16 261 (pages 1-2400, filtered with v7) + 57 426 (remaining
 pages, filtered with v8; tools/ukrainian/filter_silver.py).
 
@@ -15,13 +18,14 @@ import time
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # single GPU (2-GPU check failed in the probe)
 
-EPOCHS = 3  # ~11 300 iterations/epoch, ~95 min/epoch on a T4 at batch 10
+STAGE = 1  # 1, 2, 3: one epoch per Kaggle session
+EPOCHS = 1  # ~11 300 iterations, ~95 min on a T4 at batch 10
 BATCH = 10  # batch 24 with AMP and batch 32/64 in fp32 ran out of the 15 GB of a T4
-LR = 5e-5
+LR = 0.00005  # stage 2: 0.00003, stage 3: 0.000015
 GOLD_REPEAT = 2
-TRAIN_HOURS = 6.0  # 3 epochs need ~4.8 h; outputs are saved only if the kernel ends normally
+TRAIN_HOURS = 2.3  # safety net only: one epoch needs ~1.6 h
 WORK = "/kaggle/working"
-OUT = os.path.join(WORK, "output", "uk_handwritten_rec_gpu_v9")
+OUT = os.path.join(WORK, "output", "uk_handwritten_rec_gpu_v9_e{}".format(STAGE))
 
 
 def sh(cmd, check=True):
@@ -66,7 +70,9 @@ sh(sys.executable + " -m pip install -q -r {}/requirements.txt".format(repo))
 v7_dir = os.path.dirname(find("uk_handwritten_v7/train_wh.txt"))
 silver_dir = os.path.dirname(find("uk_handwritten_silver/silver_train_wh.txt"))
 silver2_dir = os.path.dirname(find("uk_handwritten_silver2/silver_train_wh.txt"))
-init = find("uk_handwritten_v8_best.pdparams")[: -len(".pdparams")]
+init = (find("uk_handwritten_v8_best.pdparams") if STAGE == 1 else
+        find("uk_handwritten_rec_gpu_v9_e{}/latest/latest.pdparams".format(STAGE - 1)))[: -len(".pdparams")]
+print("init", init, flush=True)
 # one data_dir for all sources: images/ (v7), silver_images/, silver2_images/
 data_dir = "/tmp/v9data"
 os.makedirs(data_dir, exist_ok=True)
@@ -84,17 +90,7 @@ with open(os.path.join(data_dir, "train_wh.txt"), "w", encoding="utf-8") as fo:
     for line in open(os.path.join(silver2_dir, "silver_train_wh.txt"), encoding="utf-8"):
         fo.write("silver2_" + line)
 
-# resume from a previous run of this kernel (attached as kernel source), if any
-prev = sorted(glob.glob("/kaggle/input/**/uk_handwritten_rec_gpu_v9/latest/latest.pdparams", recursive=True))
 extra = []
-if prev:
-    os.makedirs(OUT, exist_ok=True)
-    src_dir = os.path.dirname(os.path.dirname(prev[0]))
-    for sub in ("latest", "best_accuracy"):
-        if os.path.isdir(os.path.join(src_dir, sub)):
-            shutil.copytree(os.path.join(src_dir, sub), os.path.join(OUT, sub), dirs_exist_ok=True)
-    extra.append("Global.checkpoints={}/latest/latest".format(OUT))
-    print("resuming from", prev[0], flush=True)
 
 os.chdir(repo)
 n_train = sum(1 for _ in open(os.path.join(data_dir, "train_wh.txt"), encoding="utf-8"))
@@ -111,7 +107,7 @@ cmd = [
     "Global.save_model_dir={}".format(OUT),
     "Global.pretrained_model={}".format(init),
     "Optimizer.lr.learning_rate={:.8f}".format(LR),  # decimal: YAML reads 7e-05 as a string
-    "Optimizer.lr.warmup_epoch=0.2",
+    "Optimizer.lr.warmup_epoch={}".format(0.2 if STAGE == 1 else 0.05),
     "Train.dataset.data_dir={}/".format(data_dir),
     "Train.dataset.label_file_list=[{}/train_wh.txt]".format(data_dir),
     "Train.sampler.first_bs={}".format(BATCH),
