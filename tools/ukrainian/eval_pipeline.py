@@ -185,6 +185,11 @@ def main(argv=None):
     parser.add_argument(
         "--det_unclip_ratio", type=float, help="DB box expansion (default 1.5)"
     )
+    parser.add_argument(
+        "--rec_score_thresh",
+        type=float,
+        help="drop recognized lines with a lower score (pipeline default 0.0)",
+    )
     add_lexicon_args(parser)
     parser.add_argument("--iou", type=float, default=0.5)
     parser.add_argument("--max_pages", type=int, default=0)
@@ -206,6 +211,7 @@ def main(argv=None):
         ("det_thresh", "text_det_thresh"),
         ("det_box_thresh", "text_det_box_thresh"),
         ("det_unclip_ratio", "text_det_unclip_ratio"),
+        ("rec_score_thresh", "text_rec_score_thresh"),
     ):
         if getattr(args, opt) is not None:
             extra[key] = getattr(args, opt)
