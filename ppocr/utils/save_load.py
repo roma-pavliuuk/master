@@ -189,14 +189,129 @@ def load_model(config, model, optimizer=None, model_type="det", ema=None):
                     )
 
     elif pretrained_model:
-        is_float16 = load_pretrained_params(model, pretrained_model)
+        class_transfer = build_rec_class_transfer_from_config(global_config)
+        is_float16 = load_pretrained_params(
+            model, pretrained_model, class_transfer=class_transfer
+        )
     else:
         logger.info("train from scratch")
     best_model_dict["is_float16"] = is_float16
     return best_model_dict
 
 
-def load_pretrained_params(model, path):
+_SPECIAL_TOKENS = ("<blank>", "<unk>", "<s>", "</s>", "<tail>")
+
+
+def _special(name):
+    # Tuples never collide with dictionary characters (which are str).
+    return ("special", name)
+
+
+def _read_dict_chars(dict_path):
+    chars = []
+    with open(dict_path, "rb") as fin:
+        for line in fin.readlines():
+            chars.append(line.decode("utf-8").strip("\n").strip("\r\n"))
+    return chars
+
+
+def build_rec_class_transfer(old_chars, new_chars, use_space_char=True):
+    """Describe how output classes of a recognition model map between two dicts.
+
+    Returns a list of ``(old_tokens, new_tokens)`` class layouts used by the
+    supported recognition heads:
+
+    * CTC (``CTCLabelDecode``): ``blank`` + chars [+ space]
+    * NRTR (``NRTRLabelDecode``, GTC branch of ``MultiHead``):
+      ``blank, <unk>, <s>, </s>`` + chars [+ space]
+    * NRTR vocabulary of ``Transformer`` which adds one extra trailing class.
+    """
+    space = [" "] if use_space_char else []
+    old_chars = list(old_chars) + space
+    new_chars = list(new_chars) + space
+    blank, unk, bos, eos, tail = [_special(t) for t in _SPECIAL_TOKENS]
+    layouts = [
+        ([blank] + old_chars, [blank] + new_chars),
+        ([blank, unk, bos, eos] + old_chars, [blank, unk, bos, eos] + new_chars),
+        (
+            [blank, unk, bos, eos] + old_chars + [tail],
+            [blank, unk, bos, eos] + new_chars + [tail],
+        ),
+    ]
+    return layouts
+
+
+def build_rec_class_transfer_from_config(global_config):
+    """Build class layouts when ``Global.pretrained_character_dict_path`` is set."""
+    old_dict_path = global_config.get("pretrained_character_dict_path")
+    if not old_dict_path:
+        return None
+    new_dict_path = global_config.get("character_dict_path")
+    if not new_dict_path:
+        raise ValueError(
+            "Global.pretrained_character_dict_path requires Global.character_dict_path"
+        )
+    for p in (old_dict_path, new_dict_path):
+        if not os.path.isfile(p):
+            raise FileNotFoundError("character dict not found: {}".format(p))
+    old_chars = _read_dict_chars(old_dict_path)
+    new_chars = _read_dict_chars(new_dict_path)
+    if old_chars == new_chars:
+        return None
+    if len(old_chars) == len(new_chars):
+        get_logger().warning(
+            "pretrained_character_dict_path and character_dict_path have the same "
+            "size but different content; output layers have identical shapes and "
+            "are loaded positionally. Change the dict size or re-initialize the head."
+        )
+    return build_rec_class_transfer(
+        old_chars, new_chars, global_config.get("use_space_char", False)
+    )
+
+
+def transfer_class_params(old_value, new_value, class_transfer):
+    """Copy the rows of ``old_value`` into ``new_value`` along the class axis.
+
+    ``old_value`` and ``new_value`` are numpy arrays that differ only in the size
+    of one axis, which must equal the number of classes of one layout in
+    ``class_transfer``. Classes present in both dictionaries keep their
+    pretrained weights; new classes keep the initial values of ``new_value``.
+
+    Returns ``(array, num_copied, num_new_classes)`` or ``None`` when the
+    parameter is not a class layer of a known layout.
+    """
+    if old_value.ndim != new_value.ndim:
+        return None
+    diff_axes = [
+        i for i in range(old_value.ndim) if old_value.shape[i] != new_value.shape[i]
+    ]
+    if len(diff_axes) != 1:
+        return None
+    axis = diff_axes[0]
+    for old_tokens, new_tokens in class_transfer:
+        if old_value.shape[axis] != len(old_tokens) or new_value.shape[axis] != len(
+            new_tokens
+        ):
+            continue
+        old_index = {}
+        for i, tok in enumerate(old_tokens):
+            old_index.setdefault(tok, i)
+        result = new_value.copy()
+        copied = 0
+        for j, tok in enumerate(new_tokens):
+            i = old_index.get(tok)
+            if i is None:
+                continue
+            dst = [slice(None)] * new_value.ndim
+            src = [slice(None)] * old_value.ndim
+            dst[axis], src[axis] = j, i
+            result[tuple(dst)] = old_value[tuple(src)]
+            copied += 1
+        return result, copied, len(new_tokens)
+    return None
+
+
+def load_pretrained_params(model, path, class_transfer=None):
     logger = get_logger()
     path = maybe_download_params(path)
     if path.endswith(".pdparams"):
@@ -222,6 +337,26 @@ def load_pretrained_params(model, path):
                 params[k1] = params[k1].astype(state_dict[k1].dtype)
             if list(state_dict[k1].shape) == list(params[k1].shape):
                 new_state_dict[k1] = params[k1]
+                continue
+            transferred = None
+            if class_transfer is not None:
+                transferred = transfer_class_params(
+                    params[k1].numpy(), state_dict[k1].numpy(), class_transfer
+                )
+            if transferred is not None:
+                value, copied, total = transferred
+                new_state_dict[k1] = paddle.to_tensor(value, dtype=state_dict[k1].dtype)
+                logger.info(
+                    "Transferred {} {} -> {}: {}/{} classes copied from pretrained "
+                    "params, {} newly initialized".format(
+                        k1,
+                        params[k1].shape,
+                        state_dict[k1].shape,
+                        copied,
+                        total,
+                        total - copied,
+                    )
+                )
             else:
                 logger.warning(
                     "The shape of model params {} {} not matched with loaded params {} {} !".format(
